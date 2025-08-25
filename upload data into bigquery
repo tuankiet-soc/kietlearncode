@@ -4,7 +4,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from google.cloud import bigquery
 
 # -------------------------------
-# 1. Lấy data từ Google Sheets (theo range chỉ định)
+# 1. Lấy data từ Google Sheets (theo range cột chỉ định)
 # -------------------------------
 scope = ["https://spreadsheets.google.com/feeds",
          "https://www.googleapis.com/auth/drive"]
@@ -19,28 +19,18 @@ WORKSHEET_NAME = "Sheet1"
 
 sheet = client.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
 
-# Lấy cột A→E (dòng đầu tiên sẽ làm header)
-data = sheet.get("A:E")
+# Lấy số dòng cuối có data
+last_row = len(sheet.get_all_values())
+
+# Lấy range cột A → D đến last_row
+data = sheet.get(f"A1:X{last_row}")
 df = pd.DataFrame(data[1:], columns=data[0])  # dòng đầu làm header
-
-# -------------------------------
-# 2. Xử lý dữ liệu trước khi load
-# -------------------------------
-
-# Thay "" bằng NA
-df = df.replace("", pd.NA)
-
-# Chỉ định cột datetime muốn convert
-datetime_cols = ["arrive_time", "depart_time", "seal_time"]
-for col in datetime_cols:
-    if col in df.columns:
-        df[col] = pd.to_datetime(df[col], errors="coerce")
 
 print("Preview data:")
 print(df.head())
 
 # -------------------------------
-# 3. Đẩy data vào BigQuery
+# 2. Push lên BigQuery
 # -------------------------------
 PROJECT_ID = "soc-planning"
 DATASET_ID = "spx25226"
@@ -51,11 +41,12 @@ table_full_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
 bq_client = bigquery.Client.from_service_account_json(CREDENTIALS_PATH)
 
 job_config = bigquery.LoadJobConfig(
-    write_disposition="WRITE_TRUNCATE",  # ghi đè mỗi lần chạy
-    autodetect=True                      # BigQuery tự suy luận schema
+    write_disposition="WRITE_TRUNCATE",
+    autodetect=True
 )
 
 job = bq_client.load_table_from_dataframe(df, table_full_id, job_config=job_config)
 job.result()
 
 print(f"✅ Đã lưu {df.shape[0]} rows vào BigQuery table: {table_full_id}")
+
