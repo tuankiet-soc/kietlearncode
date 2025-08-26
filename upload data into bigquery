@@ -9,44 +9,92 @@ from google.cloud import bigquery
 scope = ["https://spreadsheets.google.com/feeds",
          "https://www.googleapis.com/auth/drive"]
 
-CREDENTIALS_PATH = "/Users/trankiet/Desktop/soc-planning-53aa92c4d0a4.json"
+CREDENTIALS_PATH = "C:/Users/kiet.trantuan/Downloads/soc-planning-3f4fa9b242d3.json"
 
 creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_PATH, scope)
 client = gspread.authorize(creds)
 
-SHEET_NAME = "Trip Inbound"
-WORKSHEET_NAME = "Sheet1"
+SHEET_NAME = "Draft FC"
+WORKSHEET_NAME = "raw_ontime"
 
 sheet = client.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
 
 # Lấy số dòng cuối có data
 last_row = len(sheet.get_all_values())
 
-# Lấy range cột A → D đến last_row
-data = sheet.get(f"A1:X{last_row}")
+# Lấy range cột A → G đến last_row
+data = sheet.get(f"A1:G{last_row}")
 df = pd.DataFrame(data[1:], columns=data[0])  # dòng đầu làm header
 
 print("Preview data:")
 print(df.head())
 
 # -------------------------------
-# 2. Push lên BigQuery
+# 2. Định nghĩa schema & làm sạch dữ liệu
+# -------------------------------
+# Mặc định tất cả cột là STRING
+# Chỉ định cột nào cần chuyển sang INT64 hoặc TIMESTAMP
+INT_COLS = ["vol"]       # cột muốn chuyển sang INT64
+DATETIME_COLS = ["sla_lhpacked"]  # cột muốn chuyển sang TIMESTAMP (hoặc DATE)
+DATETIME_FMT = "%m/%d/%Y"       # Nếu chỉ có ngày, không cần giờ
+
+# Làm sạch và ép kiểu cột
+for col in INT_COLS:
+    if col in df.columns:
+        df[col] = df[col].astype(str).str.replace(",", "", regex=False)  # bỏ dấu phẩy
+        df[col] = pd.to_numeric(df[col], errors="coerce")                # chuyển sang INT64, nếu lỗi là NaN
+
+for col in DATETIME_COLS:
+    if col in df.columns:
+        # Chuyển thành TIMESTAMP nếu có giờ, hoặc DATE nếu chỉ có ngày
+        df[col] = pd.to_datetime(df[col], format=DATETIME_FMT, errors="coerce")
+        if col == "sla_lhpacked":
+            # Chuyển chỉ lấy phần DATE (bỏ giờ)
+            df[col] = df[col].dt.date
+
+# -------------------------------
+# 3. Tạo schema cho BigQuery
+# -------------------------------
+# Schema cho BigQuery (mặc định STRING, chuyển INT64/TIMESTAMP khi cần)
+schema = []
+for col in df.columns:
+    if col in INT_COLS:
+        schema.append(bigquery.SchemaField(col, "INT64"))
+    elif col in DATETIME_COLS:
+        # Nếu cột là ngày (DATE), dùng "DATE" thay vì "TIMESTAMP"
+        if col == "sla_lhpacked":
+            schema.append(bigquery.SchemaField(col, "DATE"))
+        else:
+            schema.append(bigquery.SchemaField(col, "TIMESTAMP"))
+    else:
+        schema.append(bigquery.SchemaField(col, "STRING"))
+
+# -------------------------------
+# 4. Push lên BigQuery
 # -------------------------------
 PROJECT_ID = "soc-planning"
 DATASET_ID = "spx25226"
-TABLE_ID   = "arrival"
+TABLE_ID   = "ontime_origin"
 
 table_full_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
 
+# Tạo client BigQuery
 bq_client = bigquery.Client.from_service_account_json(CREDENTIALS_PATH)
 
+# Cấu hình job load
 job_config = bigquery.LoadJobConfig(
-    write_disposition="WRITE_TRUNCATE",
-    autodetect=True
+    write_disposition="WRITE_TRUNCATE",  # hoặc WRITE_APPEND nếu bạn muốn thêm dữ liệu
+    schema=schema,                       # Schema định nghĩa rõ ràng
+    autodetect=False                      # Tắt autodetect, dùng schema tự định nghĩa
 )
 
+# Load dữ liệu từ DataFrame lên BigQuery
 job = bq_client.load_table_from_dataframe(df, table_full_id, job_config=job_config)
-job.result()
+job.result()  # Chờ hoàn thành
 
+# Kiểm tra kết quả
+table = bq_client.get_table(table_full_id)
 print(f"✅ Đã lưu {df.shape[0]} rows vào BigQuery table: {table_full_id}")
-
+print("Schema trong BQ:")
+for f in table.schema:
+    print(f"- {f.name}: {f.field_type}")
