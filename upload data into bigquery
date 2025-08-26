@@ -14,8 +14,8 @@ CREDENTIALS_PATH = "C:/Users/kiet.trantuan/Downloads/soc-planning-3f4fa9b242d3.j
 creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_PATH, scope)
 client = gspread.authorize(creds)
 
-SHEET_NAME = "Draft FC"
-WORKSHEET_NAME = "raw_ontime"
+SHEET_NAME = "Trip Inbound"
+WORKSHEET_NAME = "Sheet1"
 
 sheet = client.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
 
@@ -23,7 +23,7 @@ sheet = client.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
 last_row = len(sheet.get_all_values())
 
 # Lấy range cột A → G đến last_row
-data = sheet.get(f"A1:G{last_row}")
+data = sheet.get(f"A1:X{last_row}")
 df = pd.DataFrame(data[1:], columns=data[0])  # dòng đầu làm header
 
 print("Preview data:")
@@ -34,9 +34,9 @@ print(df.head())
 # -------------------------------
 # Mặc định tất cả cột là STRING
 # Chỉ định cột nào cần chuyển sang INT64 hoặc TIMESTAMP
-INT_COLS = ["vol"]       # cột muốn chuyển sang INT64
-DATETIME_COLS = ["sla_lhpacked"]  # cột muốn chuyển sang TIMESTAMP (hoặc DATE)
-DATETIME_FMT = "%m/%d/%Y"       # Nếu chỉ có ngày, không cần giờ
+INT_COLS = ["cnt_to_bulky","vol","cnt_to"]       # cột muốn chuyển sang INT64
+DATETIME_COLS = ["depart_time","seal_time","loading_time","arrive_time","unseal_time","unloaded_time"]  # cột muốn chuyển sang TIMESTAMP (hoặc DATE)
+DATETIME_FMT = "%m/%d/%Y %H:%M:%S"       # Nếu chỉ có ngày, không cần giờ
 
 # Làm sạch và ép kiểu cột
 for col in INT_COLS:
