@@ -2,99 +2,140 @@ import gspread
 import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
 from google.cloud import bigquery
+from datetime import datetime
+import pytz
 
 # -------------------------------
-# 1. Lấy data từ Google Sheets (theo range cột chỉ định)
+# 1. Config chung
 # -------------------------------
 scope = ["https://spreadsheets.google.com/feeds",
          "https://www.googleapis.com/auth/drive"]
 
-CREDENTIALS_PATH = "C:/Users/kiet.trantuan/Downloads/soc-planning-3f4fa9b242d3.json"
-
+CREDENTIALS_PATH = "/Users/trankiet/Desktop/soc-planning-53aa92c4d0a4.json"
 creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_PATH, scope)
 client = gspread.authorize(creds)
 
-SHEET_NAME = "Trip Inbound"
-WORKSHEET_NAME = "Sheet1"
-
-sheet = client.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
-
-# Lấy số dòng cuối có data
-last_row = len(sheet.get_all_values())
-
-# Lấy range cột A → G đến last_row
-data = sheet.get(f"A1:X{last_row}")
-df = pd.DataFrame(data[1:], columns=data[0])  # dòng đầu làm header
-
-print("Preview data:")
-print(df.head())
-
-# -------------------------------
-# 2. Định nghĩa schema & làm sạch dữ liệu
-# -------------------------------
-# Mặc định tất cả cột là STRING
-# Chỉ định cột nào cần chuyển sang INT64 hoặc TIMESTAMP
-INT_COLS = ["cnt_to_bulky","vol","cnt_to"]       # cột muốn chuyển sang INT64
-DATETIME_COLS = ["depart_time","seal_time","loading_time","arrive_time","unseal_time","unloaded_time"]  # cột muốn chuyển sang TIMESTAMP (hoặc DATE)
-DATETIME_FMT = "%m/%d/%Y %H:%M:%S"       # Nếu chỉ có ngày, không cần giờ
-
-# Làm sạch và ép kiểu cột
-for col in INT_COLS:
-    if col in df.columns:
-        df[col] = df[col].astype(str).str.replace(",", "", regex=False)  # bỏ dấu phẩy
-        df[col] = pd.to_numeric(df[col], errors="coerce")                # chuyển sang INT64, nếu lỗi là NaN
-
-for col in DATETIME_COLS:
-    if col in df.columns:
-        # Chuyển thành TIMESTAMP nếu có giờ, hoặc DATE nếu chỉ có ngày
-        df[col] = pd.to_datetime(df[col], format=DATETIME_FMT, errors="coerce")
-        if col == "sla_lhpacked":
-            # Chuyển chỉ lấy phần DATE (bỏ giờ)
-            df[col] = df[col].dt.date
-
-# -------------------------------
-# 3. Tạo schema cho BigQuery
-# -------------------------------
-# Schema cho BigQuery (mặc định STRING, chuyển INT64/TIMESTAMP khi cần)
-schema = []
-for col in df.columns:
-    if col in INT_COLS:
-        schema.append(bigquery.SchemaField(col, "INT64"))
-    elif col in DATETIME_COLS:
-        # Nếu cột là ngày (DATE), dùng "DATE" thay vì "TIMESTAMP"
-        if col == "sla_lhpacked":
-            schema.append(bigquery.SchemaField(col, "DATE"))
-        else:
-            schema.append(bigquery.SchemaField(col, "TIMESTAMP"))
-    else:
-        schema.append(bigquery.SchemaField(col, "STRING"))
-
-# -------------------------------
-# 4. Push lên BigQuery
-# -------------------------------
 PROJECT_ID = "soc-planning"
 DATASET_ID = "spx25226"
-TABLE_ID   = "ontime_origin"
-
-table_full_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
-
-# Tạo client BigQuery
 bq_client = bigquery.Client.from_service_account_json(CREDENTIALS_PATH)
 
-# Cấu hình job load
-job_config = bigquery.LoadJobConfig(
-    write_disposition="WRITE_TRUNCATE",  # hoặc WRITE_APPEND nếu bạn muốn thêm dữ liệu
-    schema=schema,                       # Schema định nghĩa rõ ràng
-    autodetect=False                      # Tắt autodetect, dùng schema tự định nghĩa
-)
+# Các cột cần ép kiểu
+INT_COLS = ["vol", "cnt_to", "cnt_to_bulky"]
+FLOAT_COLS = ["hc_request", "hc_commit","hc_converst","wh"]  # có thể có số thập phân
+DATETIME_COLS = [
+    "depart_time", "seal_time", "loading_time",
+    "arrive_time_at_outbound_station", "arrive_time_at_inbound_station",
+    "unseal_time", "unloaded_time", "arrive_time", "date"
+]
 
-# Load dữ liệu từ DataFrame lên BigQuery
-job = bq_client.load_table_from_dataframe(df, table_full_id, job_config=job_config)
-job.result()  # Chờ hoàn thành
+# -------------------------------
+# 2. Danh sách sheet → table
+# -------------------------------
+TABLE_CONFIGS = [
+    {
+        "sheet_name": "Trip Inbound",
+        "worksheet": "Sheet1",
+        "table_id": "trip_inbound",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:X"
+    },
+    {
+        "sheet_name": "Trip Outbound",
+        "worksheet": "Depart",
+        "table_id": "trip_outbound",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:T"
+    },
+    {
+        "sheet_name": "raw_olm",
+        "worksheet": "Convert Booking",
+        "table_id": "booking_os",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:K"
+    },
+    {
+        "sheet_name": "raw_olm",
+        "worksheet": "Convert commit",
+        "table_id": "commit_os",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:M"
+    }
+]
 
-# Kiểm tra kết quả
-table = bq_client.get_table(table_full_id)
-print(f"✅ Đã lưu {df.shape[0]} rows vào BigQuery table: {table_full_id}")
-print("Schema trong BQ:")
-for f in table.schema:
-    print(f"- {f.name}: {f.field_type}")
+# -------------------------------
+# 3. Hàm xử lý 1 sheet → 1 table
+# -------------------------------
+def load_sheet_to_bq(sheet_name, worksheet_name, table_id,
+                     write_mode="WRITE_TRUNCATE", range_cols="A1:T"):
+    sheet = client.open(sheet_name).worksheet(worksheet_name)
+    last_row = len(sheet.get_all_values())
+
+    # Giới hạn cột theo config
+    data = sheet.get(f"{range_cols}{last_row}")
+    df = pd.DataFrame(data[1:], columns=data[0])
+
+    # Làm sạch dữ liệu
+    df = df.replace(r'^\s*$', pd.NA, regex=True).dropna(how="all")
+
+    # Ép kiểu INT
+    for col in INT_COLS:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace(",", "", regex=False)
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    # Ép kiểu FLOAT
+    for col in FLOAT_COLS:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace(",", "", regex=False)
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Ép kiểu DATETIME → local VN
+    for col in DATETIME_COLS:
+        if col in df.columns:
+            try:
+                tmp = pd.to_datetime(df[col], errors="coerce")
+                df[col] = tmp.dt.tz_localize("UTC").dt.tz_convert("Asia/Ho_Chi_Minh").dt.tz_localize(None)
+            except Exception as e:
+                print(f"⚠️ Lỗi parse datetime cột {col}: {e}")
+
+    # Thêm query_time (local VN)
+    vn_now = datetime.now(pytz.timezone("Asia/Ho_Chi_Minh"))
+    df["query_time"] = vn_now.replace(tzinfo=None)
+
+    # Schema BigQuery
+    schema = []
+    for col in df.columns:
+        if col in INT_COLS:
+            schema.append(bigquery.SchemaField(col, "INT64"))
+        elif col in FLOAT_COLS:
+            schema.append(bigquery.SchemaField(col, "FLOAT64"))
+        elif col in DATETIME_COLS or col == "query_time":
+            schema.append(bigquery.SchemaField(col, "DATETIME"))
+        else:
+            schema.append(bigquery.SchemaField(col, "STRING"))
+
+    # Load lên BigQuery
+    table_full_id = f"{PROJECT_ID}.{DATASET_ID}.{table_id}"
+    job_config = bigquery.LoadJobConfig(
+        write_disposition=write_mode,
+        schema=schema,
+        autodetect=False
+    )
+    job = bq_client.load_table_from_dataframe(df, table_full_id, job_config=job_config)
+    job.result()
+
+    print(f"✅ {sheet_name}/{worksheet_name} → {table_full_id}: "
+          f"{df.shape[0]} rows (cols={range_cols}, mode={write_mode}, datetime=VN local)")
+
+# -------------------------------
+# 4. Chạy nhiều sheet → nhiều table
+# -------------------------------
+for cfg in TABLE_CONFIGS:
+    load_sheet_to_bq(
+        cfg["sheet_name"],
+        cfg["worksheet"],
+        cfg["table_id"],
+        cfg["write_mode"],
+        cfg["range_cols"]
+    )
+
