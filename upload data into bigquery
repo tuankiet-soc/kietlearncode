@@ -138,4 +138,3 @@ for cfg in TABLE_CONFIGS:
         cfg["write_mode"],
         cfg["range_cols"]
     )
-
