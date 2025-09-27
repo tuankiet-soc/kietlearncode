@@ -1,0 +1,133 @@
+import os
+import pandas as pd
+from google.cloud import bigquery
+from datetime import datetime
+import pytz
+
+# -------------------------------
+# 1. Config chung
+# -------------------------------
+CREDENTIALS_PATH = "/Users/trankiet/Desktop/soc-planning-53aa92c4d0a4.json"
+PROJECT_ID = "soc-planning"
+DATASET_ID = "spx25226"
+TABLE_ID = "sort_code_nationwide"   # Bảng đích trên BigQuery
+FOLDER_PATH = "/Users/trankiet/Desktop/sort_to_ship"  # Folder chứa file Excel
+
+bq_client = bigquery.Client.from_service_account_json(CREDENTIALS_PATH)
+
+# Các cột cần ép kiểu (sau khi chuẩn hoá tên)
+INT_COLS = ["shipment_id_count"]
+FLOAT_COLS = []
+DATETIME_COLS = ["out_for_deliver_date"]
+
+# -------------------------------
+# 2. Chuẩn hoá tên cột
+# -------------------------------
+def clean_column_names(df):
+    df.columns = (
+        df.columns.str.strip()  # bỏ khoảng trắng đầu/cuối
+                  .str.lower()
+                  .str.replace(" ", "_", regex=False)
+                  .str.replace("(", "_", regex=False)
+                  .str.replace(")", "", regex=False)
+                  .str.replace("-", "_", regex=False)
+    )
+    return df
+
+# -------------------------------
+# 3. Load tất cả Excel trong folder
+# -------------------------------
+def load_all_excels(folder_path):
+    dfs = []
+    for file in os.listdir(folder_path):
+        if file.endswith(".xlsx") or file.endswith(".xls"):
+            file_path = os.path.join(folder_path, file)
+            try:
+                xls = pd.ExcelFile(file_path)
+                for sheet in xls.sheet_names:
+                    df = pd.read_excel(file_path, sheet_name=sheet)
+                    df["source_file"] = file
+                    df["source_sheet"] = sheet
+                    dfs.append(df)
+                    print(f"📥 Đọc {file}/{sheet}: {df.shape[0]} rows")
+            except Exception as e:
+                print(f"⚠️ Lỗi đọc file {file}: {e}")
+    if dfs:
+        return pd.concat(dfs, ignore_index=True)
+    else:
+        return pd.DataFrame()
+
+# -------------------------------
+# 4. Chuẩn hoá dữ liệu
+# -------------------------------
+def clean_dataframe(df):
+    # Chuẩn hoá tên cột cho hợp lệ BigQuery
+    df = clean_column_names(df)
+
+    # Làm sạch dữ liệu rỗng
+    df = df.replace(r'^\s*$', pd.NA, regex=True).dropna(how="all")
+
+    # Ép kiểu INT
+    for col in INT_COLS:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace(",", "", regex=False)
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    # Ép kiểu FLOAT
+    for col in FLOAT_COLS:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace(",", "", regex=False)
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Ép kiểu DATETIME → local VN
+    for col in DATETIME_COLS:
+        if col in df.columns:
+            try:
+                tmp = pd.to_datetime(df[col], errors="coerce")
+                df[col] = tmp.dt.tz_localize("UTC").dt.tz_convert("Asia/Ho_Chi_Minh").dt.tz_localize(None)
+            except Exception as e:
+                print(f"⚠️ Lỗi parse datetime cột {col}: {e}")
+
+    # Thêm query_time
+    vn_now = datetime.now(pytz.timezone("Asia/Ho_Chi_Minh"))
+    df["query_time"] = vn_now.replace(tzinfo=None)
+
+    return df
+
+# -------------------------------
+# 5. Upload DataFrame lên BigQuery
+# -------------------------------
+def upload_to_bq(df, table_id, write_mode="WRITE_TRUNCATE"):
+    # Schema BigQuery
+    schema = []
+    for col in df.columns:
+        if col in INT_COLS:
+            schema.append(bigquery.SchemaField(col, "INT64"))
+        elif col in FLOAT_COLS:
+            schema.append(bigquery.SchemaField(col, "FLOAT64"))
+        elif col in DATETIME_COLS or col == "query_time":
+            schema.append(bigquery.SchemaField(col, "DATETIME"))
+        else:
+            schema.append(bigquery.SchemaField(col, "STRING"))
+
+    table_full_id = f"{PROJECT_ID}.{DATASET_ID}.{table_id}"
+    job_config = bigquery.LoadJobConfig(
+        write_disposition=write_mode,
+        schema=schema,
+        autodetect=False
+    )
+    job = bq_client.load_table_from_dataframe(df, table_full_id, job_config=job_config)
+    job.result()
+
+    print(f"✅ Upload thành công: {table_full_id} với {df.shape[0]} rows")
+
+# -------------------------------
+# 6. Main
+# -------------------------------
+if __name__ == "__main__":
+    df_all = load_all_excels(FOLDER_PATH)
+    if df_all.empty:
+        print("❌ Không tìm thấy dữ liệu Excel trong folder.")
+    else:
+        df_all = clean_dataframe(df_all)
+        upload_to_bq(df_all, TABLE_ID)
