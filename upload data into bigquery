@@ -21,11 +21,11 @@ bq_client = bigquery.Client.from_service_account_json(CREDENTIALS_PATH)
 
 # Các cột cần ép kiểu
 INT_COLS = ["vol", "cnt_to", "cnt_to_bulky"]
-FLOAT_COLS = ["hc_request", "hc_commit","hc_converst","wh","wroking_hour_normal","wroking_hour_ot","hc_ot_kpi","hc_ot_normal","Lhpacked Ontime","Total LHpacked Inbound","%Ontime","Overdue","Late Order D-1","%Overdue","Volume","total_inbound","total_outbound","total_return","vol_arrive","Pending_Unload","Pending_Inbound_forward","Pending_Inbound_return","Pending_Packed","Pending_Seal"," Pending_Linehaul","Pending_Return","Pending_3PL_Handover","Pending_3PL_Inbound","Pending_Cache_Order","Pending_Intercept"]  # có thể có số thập phân
+FLOAT_COLS = ["hc_request", "hc_commit","hc_converst","wh","wroking_hour_normal","wroking_hour_ot","hc_ot_kpi","hc_ot_normal","Lhpacked Ontime","Total LHpacked Inbound","%Ontime","Overdue","Late Order D-1","%Overdue","Volume","total_inbound","total_outbound","total_return","vol_arrive","Pending_Unload","Pending_Inbound_forward","Pending_Inbound_return","Pending_Packed","Pending_Seal","Pending_Linehaul","Pending_Return","Pending_3PL_Handover","Pending_3PL_Inbound","Pending_Cache_Order","Pending_Intercept","vol","vol_bulky"]  # có thể có số thập phân
 DATETIME_COLS = [
     "depart_time", "seal_time", "loading_time",
     "arrive_time_at_outbound_station", "arrive_time_at_inbound_station",
-    "unseal_time", "unloaded_time", "arrive_time", "date","date_ops","sla_date","cdate","c_date","arrived_date","Snapshot Time"
+    "unseal_time", "unloaded_time", "arrive_time", "date","date_ops","sla_date","cdate","c_date","arrived_date","Snapshot_Time","sla_lhpacked"
 ]
 
 # -------------------------------
@@ -115,6 +115,20 @@ TABLE_CONFIGS = [
         "table_id": "raw_backlog",
         "write_mode": "WRITE_TRUNCATE",
         "range_cols": "A1:O"
+    },
+    {
+        "sheet_name": "Storage data",
+        "worksheet": "raw_ontime_before",
+        "table_id": "raw_ontime_before",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:E"
+    },
+    {
+        "sheet_name": "Storage data",
+        "worksheet": "raw_bulky",
+        "table_id": "raw_bulky",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:C"
     }
 ]
 
