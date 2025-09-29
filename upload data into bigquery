@@ -11,7 +11,7 @@ import pytz
 scope = ["https://spreadsheets.google.com/feeds",
          "https://www.googleapis.com/auth/drive"]
 
-CREDENTIALS_PATH = "/Users/trankiet/Desktop/soc-planning-53aa92c4d0a4.json"
+CREDENTIALS_PATH = "c:/Users/kiet.trantuan/Desktop/soc-planning-2b70d5a26ace.json"
 creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_PATH, scope)
 client = gspread.authorize(creds)
 
@@ -21,11 +21,11 @@ bq_client = bigquery.Client.from_service_account_json(CREDENTIALS_PATH)
 
 # Các cột cần ép kiểu
 INT_COLS = ["vol", "cnt_to", "cnt_to_bulky"]
-FLOAT_COLS = ["hc_request", "hc_commit","hc_converst","wh"]  # có thể có số thập phân
+FLOAT_COLS = ["hc_request", "hc_commit","hc_converst","wh","wroking_hour_normal","wroking_hour_ot","hc_ot_kpi","hc_ot_normal","Lhpacked Ontime","Total LHpacked Inbound","%Ontime","Overdue","Late Order D-1","%Overdue","Volume","total_inbound","total_outbound","total_return","vol_arrive","Pending_Unload","Pending_Inbound_forward","Pending_Inbound_return","Pending_Packed","Pending_Seal"," Pending_Linehaul","Pending_Return","Pending_3PL_Handover","Pending_3PL_Inbound","Pending_Cache_Order","Pending_Intercept"]  # có thể có số thập phân
 DATETIME_COLS = [
     "depart_time", "seal_time", "loading_time",
     "arrive_time_at_outbound_station", "arrive_time_at_inbound_station",
-    "unseal_time", "unloaded_time", "arrive_time", "date"
+    "unseal_time", "unloaded_time", "arrive_time", "date","date_ops","sla_date","cdate","c_date","arrived_date","Snapshot Time"
 ]
 
 # -------------------------------
@@ -59,6 +59,62 @@ TABLE_CONFIGS = [
         "table_id": "commit_os",
         "write_mode": "WRITE_TRUNCATE",
         "range_cols": "A1:M"
+    },
+    {
+        "sheet_name": "HCM SOC_Verify OT",
+        "worksheet": "raw+cook",
+        "table_id": "actual_working_hour",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:H"
+    },
+    {
+        "sheet_name": "Storage data",
+        "worksheet": "raw_ontime",
+        "table_id": "raw_ontime",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:E"
+    },
+    {
+        "sheet_name": "Storage data",
+        "worksheet": "raw_overdue",
+        "table_id": "raw_overdue",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:E"
+    },
+    {
+        "sheet_name": "Storage data",
+        "worksheet": "raw_forecast",
+        "table_id": "raw_forecast",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:H"
+    },
+    {
+        "sheet_name": "Storage data",
+        "worksheet": "raw_throughput",
+        "table_id": "raw_throughput",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:E"
+    },
+    {
+        "sheet_name": "Storage data",
+        "worksheet": "raw_forecast",
+        "table_id": "raw_forecast",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:H"
+    },
+    {
+        "sheet_name": "Storage data",
+        "worksheet": "raw_arrived",
+        "table_id": "raw_arrived",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:D"
+    },
+    {
+        "sheet_name": "Storage data",
+        "worksheet": "raw_backlog",
+        "table_id": "raw_backlog",
+        "write_mode": "WRITE_TRUNCATE",
+        "range_cols": "A1:O"
     }
 ]
 
