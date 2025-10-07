@@ -1,5 +1,5 @@
 # ============================================================
-# 📦 MAP HCM DISTRICT + WARD HEATMAP + CENTRAL RADIUS + DASHBOARD (V6)
+# 📦 MAP HCM DISTRICT + WARD HEATMAP + CENTRAL RADIUS + DASHBOARD (V6 - UPDATED STRUCTURE)
 # ============================================================
 import pandas as pd
 import geopandas as gpd
@@ -11,10 +11,10 @@ from math import radians, cos, sin, sqrt, atan2
 # ============================================================
 # 1️⃣ INPUT FILE
 # ============================================================
-excel_path = "/Users/trankiet/Desktop/data_output1.xlsx"
-geojson_nationwide = "/Users/trankiet/Downloads/gadm41_VNM_3.json"
-geojson_hcm = "/Users/trankiet/Downloads/hcm_wards_from_gadm.json"
-output_html = "/Users/trankiet/Desktop/map_hcm_quan_phuong_v6.html"
+excel_path = "C:/Users/kiet.trantuan/Desktop/data_output1.xlsx"
+geojson_nationwide = "C:/Users/kiet.trantuan/Downloads/gadm41_VNM_3.json"
+geojson_hcm = "C:/Users/kiet.trantuan/Downloads/hcm_wards_from_gadm.json"
+output_html = "C:/Users/kiet.trantuan/Desktop/map_hcm_quan_phuong_v6.html"
 
 # ============================================================
 # 2️⃣ FILTER TP.HCM (CHẠY 1 LẦN)
@@ -31,8 +31,7 @@ else:
 # ============================================================
 # 3️⃣ LOAD DATA
 # ============================================================
-df = pd.read_excel(excel_path).dropna(subset=["de_lat", "de_lng", "seller_confirmed"])
-df = df[["shipment_id", "json_district", "json_province", "seller_confirmed", "de_lat", "de_lng"]].drop_duplicates()
+df = pd.read_excel(excel_path).dropna(subset=["seller_confirmed"])
 df["seller_confirmed"] = pd.to_datetime(df["seller_confirmed"], errors="coerce")
 
 def normalize(s):
@@ -44,23 +43,30 @@ def normalize(s):
     s = s.replace("quan ", "quan").replace("huyen ", "huyen")
     return s
 
-df["buy_c_norm"] = df["json_district"].apply(normalize)
-df["buy_di_norm"] = df["json_province"].apply(normalize)
+# Chuẩn hoá địa chỉ
+for prefix in ["pu", "de"]:
+    df[f"{prefix}_city_norm"] = df[f"{prefix}_city"].apply(normalize)
+    df[f"{prefix}_district_norm"] = df[f"{prefix}_district"].apply(normalize)
 
 # ============================================================
-# 4️⃣ TÍNH METRIC
+# 4️⃣ TÍNH METRIC CHUNG
 # ============================================================
 df["date"] = df["seller_confirmed"].dt.date
 df["week"] = df["seller_confirmed"].dt.isocalendar().week
 df["month"] = df["seller_confirmed"].dt.to_period("M")
 
-ado_by_ward = (
-    df.groupby(["buy_c_norm", "buy_di_norm"])
-    .agg(ADO=("shipment_id", "count"))
-    .reset_index()
-)
-ado_by_ward["Week"] = ado_by_ward["ADO"] / df["week"].nunique()
-ado_by_ward["Month"] = ado_by_ward["ADO"] / df["month"].nunique()
+def calc_metric(city_col, dist_col):
+    tmp = (
+        df.groupby([city_col, dist_col])
+        .agg(ADO=("shipment_id", "count"))
+        .reset_index()
+    )
+    tmp["Week"] = tmp["ADO"] / df["week"].nunique()
+    tmp["Month"] = tmp["ADO"] / df["month"].nunique()
+    return tmp
+
+ado_pickup = calc_metric("pu_city_norm", "pu_district_norm")
+ado_delivery = calc_metric("de_city_norm", "de_district_norm")
 
 # ============================================================
 # 5️⃣ LOAD GEOJSON TP.HCM
@@ -73,21 +79,29 @@ for feat in geo["features"]:
     props["NAME_3_norm"] = normalize(props.get("NAME_3", ""))
 
 # ============================================================
-# 6️⃣ GẮN DỮ LIỆU
+# 6️⃣ GẮN DỮ LIỆU CHO PICKUP & DELIVERY
 # ============================================================
-ward_dict = ado_by_ward.set_index(["buy_c_norm", "buy_di_norm"])[["ADO", "Week", "Month"]].to_dict("index")
-for feat in geo["features"]:
-    c = feat["properties"]["NAME_2_norm"]
-    w = feat["properties"]["NAME_3_norm"]
-    metric = ward_dict.get((c, w), {"ADO": 0, "Week": 0, "Month": 0})
-    feat["properties"]["ADO"] = round(metric["ADO"], 1)
-    feat["properties"]["Week"] = round(metric["Week"], 1)
-    feat["properties"]["Month"] = round(metric["Month"], 1)
+def attach_metric(source, data):
+    metric_dict = data.set_index(["pu_city_norm" if source == "Pickup" else "de_city_norm",
+                                  "pu_district_norm" if source == "Pickup" else "de_district_norm"])[
+        ["ADO", "Week", "Month"]
+    ].to_dict("index")
+
+    for feat in geo["features"]:
+        c = feat["properties"]["NAME_2_norm"]
+        w = feat["properties"]["NAME_3_norm"]
+        val = metric_dict.get((c, w), {"ADO": 0, "Week": 0, "Month": 0})
+        feat["properties"][f"ADO_{source}"] = round(val["ADO"], 1)
+        feat["properties"][f"Week_{source}"] = round(val["Week"], 1)
+        feat["properties"][f"Month_{source}"] = round(val["Month"], 1)
+
+attach_metric("Pickup", ado_pickup)
+attach_metric("Delivery", ado_delivery)
 
 geojson_js = json.dumps(geo, ensure_ascii=False)
 
 # ============================================================
-# 7️⃣ TÍNH KHOẢNG CÁCH TỚI CENTRAL
+# 7️⃣ TÍNH KHOẢNG CÁCH CENTRAL
 # ============================================================
 central_lat, central_lng = 10.819768, 106.671416
 def haversine(lat, lng):
@@ -96,16 +110,13 @@ def haversine(lat, lng):
     dlon = radians(lng - central_lng)
     a = sin(dlat / 2)**2 + cos(radians(central_lat)) * cos(radians(lat)) * sin(dlon / 2)**2
     return 2 * R * atan2(sqrt(a), sqrt(1 - a))
-df["distance_km"] = df.apply(lambda r: haversine(r["de_lat"], r["de_lng"]), axis=1)
 
+df["distance_km"] = df.apply(lambda r: haversine(r["de_lat"], r["de_lng"]), axis=1)
 bins = [0, 5, 10, 15, 20, 9999]
 labels = ["0–5 km", "5–10 km", "10–15 km", "15–20 km", ">20 km"]
 df["radius_group"] = pd.cut(df["distance_km"], bins=bins, labels=labels, right=False)
 
-stat = (
-    df.groupby("radius_group")["shipment_id"]
-    .count().reset_index(name="Count")
-)
+stat = df.groupby("radius_group")["shipment_id"].count().reset_index(name="Count")
 total = stat["Count"].sum()
 stat["Pct"] = (stat["Count"] / total * 100).round(1)
 stats_json = stat.to_dict(orient="records")
@@ -118,7 +129,7 @@ html = f"""
 <html lang="vi">
 <head>
 <meta charset="utf-8"/>
-<title>📦 Volume Map TP.HCM (V6)</title>
+<title>📦 Pickup & Delivery Heatmap (V6)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
 <style>
@@ -138,7 +149,7 @@ html = f"""
   Type:
   <select id="typeSelect">
     <option value="Delivery" selected>Delivery</option>
-    <option value="Pickup" disabled>Pickup (coming soon)</option>
+    <option value="Pickup">Pickup</option>
   </select>
   Metric:
   <select id="metricSelect">
@@ -193,30 +204,32 @@ const dSel=document.getElementById("districtSelect");
 allDistricts.forEach(d=>{{const o=document.createElement("option");o.value=d;o.textContent=d;dSel.appendChild(o);}});
 
 let layer;
-function render(metric,selected){{
+function render(type,metric,selected){{
   if(layer)map.removeLayer(layer);
-  const maxVal=Math.max(...geoData.features.map(f=>f.properties[metric]));
+  const key=metric+"_"+type;
+  const maxVal=Math.max(...geoData.features.map(f=>f.properties[key]));
   layer=L.geoJSON(geoData,{{
     style:f=>{{
       const p=f.properties;
       let color='#f2f2f2';
       if(selected==='all'||p.NAME_2===selected)
-        color=getColor(p[metric],maxVal);
+        color=getColor(p[key],maxVal);
       return{{color:'#666',weight:1,fillColor:color,fillOpacity:0.85}};
     }},
     onEachFeature:(f,l)=>{{
       const p=f.properties;
       if(selected==='all'||p.NAME_2===selected)
-        l.bindPopup(`<b>${{p.NAME_3}}</b><br>ADO: ${{p.ADO}}<br>Week: ${{p.Week}}<br>Month: ${{p.Month}}`);
+        l.bindPopup(`<b>${{p.NAME_3}}</b><br>${{metric}}: ${{p[key]}}`);
     }}
   }}).addTo(map);
   if(selected==='all')map.setView([10.77,106.7],9);
   else map.fitBounds(L.geoJSON(geoData.features.filter(f=>f.properties.NAME_2===selected)).getBounds());
 }}
-render("ADO","all");
+render("Delivery","ADO","all");
 
-document.getElementById("metricSelect").addEventListener("change",e=>render(e.target.value,dSel.value));
-dSel.addEventListener("change",()=>render(document.getElementById("metricSelect").value,dSel.value));
+document.getElementById("metricSelect").addEventListener("change",()=>render(typeSelect.value,metricSelect.value,dSel.value));
+document.getElementById("typeSelect").addEventListener("change",()=>render(typeSelect.value,metricSelect.value,dSel.value));
+dSel.addEventListener("change",()=>render(typeSelect.value,metricSelect.value,dSel.value));
 document.getElementById("radiusToggle").addEventListener("change",e=>{{if(e.target.checked)radiusGroup.addTo(map);else map.removeLayer(radiusGroup);}});
 
 // 📊 Legend + Stats
@@ -240,4 +253,4 @@ return div;}};stats.addTo(map);
 # ============================================================
 with open(output_html, "w", encoding="utf-8") as f:
     f.write(html)
-print("✅ Đã tạo bản đồ V6 hoàn chỉnh:", output_html)
+print("✅ Đã tạo bản đồ V6 (Pickup + Delivery):", output_html)
