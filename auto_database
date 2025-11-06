@@ -1,0 +1,187 @@
+import re
+import pandas as pd
+import time
+from datetime import datetime
+from google.cloud import bigquery
+from google.oauth2 import service_account
+import gspread
+import pytz
+
+# ============================================================
+# 1️⃣ CONFIG
+# ============================================================
+SERVICE_ACCOUNT_FILE = r"C:\Users\kiet.trantuan\Desktop\soc-planning-2b70d5a26ace.json"
+PROJECT_ID = "soc-planning"
+DATASET_ID = "ops_solution"
+TABLE_ID = "runrate_sdd"
+SPREADSHEET_NAME = "[OPS Solution] rawdata_SDD"
+SHEET_NAME = "Sheet1"
+
+bq_client = bigquery.Client.from_service_account_json(SERVICE_ACCOUNT_FILE)
+creds = service_account.Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_FILE,
+    scopes=[
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/bigquery"
+    ],
+)
+gc = gspread.authorize(creds)
+
+# ============================================================
+# 2️⃣ SCHEMA (giữ nguyên như local)
+# ============================================================
+INT_COLS = [
+    "rider_id_pu_done", "rider_id_delivered", "seller_id"
+]
+
+FLOAT_COLS = [
+    # ví dụ: "success_rate", "avg_distance"
+]
+
+DATETIME_COLS = [
+    "date", "buyer_confirmed_time", "seller_confirmed",
+    "time_pu_attempt", "time_pu_done", "time_lmhub_received",
+    "time_lmhub_assigned", "time_deli_attempt", "time_onhold",
+    "time_assigned_2nd", "time_attempt_2nd", "time_onhold_2nd",
+    "time_assigned_3rd", "time_attempt_3rd", "time_onhold_3rd",
+    "time_delivered", "time_lh_arrived"
+]
+
+
+# ============================================================
+# 3️⃣ CLEAN TÊN CỘT
+# ============================================================
+def clean_column_names(df):
+    df.columns = (
+        df.columns.str.strip()
+                  .str.lower()
+                  .str.replace(" ", "_", regex=False)
+                  .str.replace("(", "_", regex=False)
+                  .str.replace(")", "", regex=False)
+                  .str.replace("-", "_", regex=False)
+                  .str.replace("/", "_", regex=False)
+    )
+    df.columns = [re.sub(r'[^a-z0-9_]', '_', c) for c in df.columns]
+    return df
+
+
+# ============================================================
+# 4️⃣ CHUẨN HÓA DỮ LIỆU
+# ============================================================
+def clean_dataframe(df):
+    original_cols = df.columns.tolist()
+    df = clean_column_names(df)
+    renamed_map = dict(zip(original_cols, df.columns))
+
+    df = df.replace(r'^\s*$', pd.NA, regex=True).dropna(how="all")
+
+    # Chuẩn hóa danh sách cột sau clean
+    int_cols_clean = [re.sub(r'[^a-z0-9_]', '_', c.lower()) for c in INT_COLS]
+    float_cols_clean = [re.sub(r'[^a-z0-9_]', '_', c.lower()) for c in FLOAT_COLS]
+    datetime_cols_clean = [re.sub(r'[^a-z0-9_]', '_', c.lower()) for c in DATETIME_COLS]
+
+    # INT
+    for col in int_cols_clean:
+        if col in df.columns:
+            df[col] = (
+                df[col].astype(str)
+                       .str.replace(",", "", regex=False)
+                       .str.replace(r"[^\d-]", "", regex=True)
+                       .replace("", pd.NA)
+            )
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    # FLOAT
+    for col in float_cols_clean:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # DATETIME
+    for col in datetime_cols_clean:
+        if col in df.columns:
+            try:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
+                df[col] = df[col].dt.tz_localize(None)
+            except Exception as e:
+                print(f"⚠️ Lỗi parse datetime {col}: {e}")
+                df[col] = pd.NaT
+
+    # STRING cho cột còn lại
+    special_cols = set(int_cols_clean + float_cols_clean + datetime_cols_clean + ["query_time"])
+    for col in df.columns:
+        if col not in special_cols:
+            df[col] = df[col].astype(str)
+
+    # query_time
+    vn_now = datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).replace(tzinfo=None)
+    df["query_time"] = vn_now
+
+    print("✅ Chuẩn hoá xong. Ánh xạ cột:")
+    print(renamed_map)
+    return df
+
+
+# ============================================================
+# 5️⃣ UPLOAD LÊN BIGQUERY
+# ============================================================
+def upload_to_bq(df, table_id, write_mode="WRITE_TRUNCATE"):
+    def normalize_name(c):
+        return re.sub(r'[^a-z0-9_]', '_', c.lower().strip())
+
+    int_cols_clean = [normalize_name(c) for c in INT_COLS]
+    float_cols_clean = [normalize_name(c) for c in FLOAT_COLS]
+    datetime_cols_clean = [normalize_name(c) for c in DATETIME_COLS]
+
+    schema = []
+    for col in df.columns:
+        if col in int_cols_clean:
+            schema.append(bigquery.SchemaField(col, "INT64"))
+        elif col in float_cols_clean:
+            schema.append(bigquery.SchemaField(col, "FLOAT64"))
+        elif col in datetime_cols_clean or col == "query_time":
+            schema.append(bigquery.SchemaField(col, "DATETIME"))
+        else:
+            schema.append(bigquery.SchemaField(col, "STRING"))
+
+    table_full_id = f"{PROJECT_ID}.{DATASET_ID}.{table_id}"
+    job_config = bigquery.LoadJobConfig(
+        write_disposition=write_mode,
+        schema=schema,
+        autodetect=False
+    )
+
+    job = bq_client.load_table_from_dataframe(df, table_full_id, job_config=job_config)
+    job.result()
+    print(f"✅ Upload thành công: {table_full_id} với {df.shape[0]} rows")
+
+
+# ============================================================
+# 6️⃣ MAIN LOOP (Hourly sync)
+# ============================================================
+def upload_from_google_sheet():
+    print(f"\n⏰ [{datetime.now()}] 🔄 Bắt đầu sync dữ liệu...")
+
+    try:
+        ws = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
+        data = ws.get_all_records()
+        if not data:
+            print("⚠️ Sheet trống — không có dữ liệu để upload.")
+            return
+
+        df = pd.DataFrame(data)
+        print(f"✅ Đọc {len(df)} dòng, {len(df.columns)} cột từ Google Sheet '{SHEET_NAME}'")
+        df = clean_dataframe(df)
+        upload_to_bq(df, TABLE_ID)
+
+    except Exception as e:
+        print(f"❌ Lỗi upload: {e}")
+
+
+print("🚀 Scheduler khởi động, sẽ chạy mỗi 1 tiếng...")
+upload_from_google_sheet()  # chạy lần đầu
+
+while True:
+    print(f"[{datetime.now()}] ⏳ Đợi 1 tiếng trước lần chạy kế tiếp...")
+    time.sleep(3600)
+    upload_from_google_sheet()
